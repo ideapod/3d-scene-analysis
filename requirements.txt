@@ -1,3 +1,5 @@
 numpy
 trimesh
 matplotlib
+imageio
+Pillow
