@@ -33,7 +33,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # Default GIF frame indices that align with front and side layout views.
 # The SAM3D render_video() spins 300 frames from yaw=-90° → +270°.
@@ -94,8 +93,9 @@ def load_scene_boxes(glb_path):
         extents  = max_pt - min_pt
 
         try:
-            idx = int(name.split("_")[-1])
-        except ValueError:
+            # Geometry name format: "object_{idx}" or "object_{idx}_{label_slug}"
+            idx = int(name.split("_")[1])
+        except (ValueError, IndexError):
             idx = len(boxes)
 
         boxes[idx] = {
@@ -185,61 +185,65 @@ def _color_palette(n):
     return {idx: cmap(i % 10) for i, idx in enumerate(sorted(range(n)))}
 
 
-def _draw_box(ax, min_pt, max_pt, color, alpha=0.18):
-    x0, y0, z0 = min_pt
-    x1, y1, z1 = max_pt
-    faces = [
-        [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]],
-        [[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],
-        [[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0]],
-        [[x1,y0,z0],[x1,y0,z1],[x1,y1,z1],[x1,y1,z0]],
-        [[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]],
-        [[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]],
-    ]
-    poly = Poly3DCollection(
-        faces, alpha=alpha, facecolor=color, edgecolor=color, linewidth=0.5
-    )
-    ax.add_collection3d(poly)
+def _render_2d_projection(boxes, labels, colors, legend_patches,
+                           h_axis, v_axis,
+                           h_label, v_label, depth_label,
+                           title, out_path,
+                           invert_h=False, invert_v=False):
+    """
+    True 2D projection: each object drawn as a flat rectangle in the
+    (h_axis, v_axis) plane.  The third axis is 'depth' — objects are
+    sorted so nearer ones (smaller depth centroid) are drawn on top, and
+    each box is annotated with its depth centroid value.
+    """
+    depth_axis = ({0, 1, 2} - {h_axis, v_axis}).pop()
 
+    fig, ax = plt.subplots(figsize=(14, 8))
 
-def _setup_axes(ax, boxes, mid, max_r):
-    ax.set_xlim(mid[0]-max_r, mid[0]+max_r)
-    ax.set_ylim(mid[1]-max_r, mid[1]+max_r)
-    ax.set_zlim(mid[2]-max_r, mid[2]+max_r)
-    ax.set_xlabel("X  (left ↔ right)", labelpad=10)
-    ax.set_ylabel("Y  (down ↕ up)",    labelpad=10)
-    ax.set_zlabel("Z  (depth)",         labelpad=10)
+    # Draw farther objects first so nearer ones appear on top
+    sorted_idxs = sorted(boxes.keys(),
+                         key=lambda i: -boxes[i]["centroid"][depth_axis])
 
-    # Ground plane at Y = 0 (pipeline aligns every object's bottom to zero)
-    ground_y = 0.0
-    x0, x1   = mid[0]-max_r, mid[0]+max_r
-    z0, z1   = mid[2]-max_r, mid[2]+max_r
-    xx, zz   = np.meshgrid([x0, x1], [z0, z1])
-    yy       = np.full_like(xx, ground_y)
-    ax.plot_surface(xx, yy, zz, alpha=0.07, color="green")
-    ax.text(x1, ground_y, z1, "  ground plane",
-            fontsize=8, color="green", style="italic")
-
-
-def _render_view(boxes, labels, colors, legend_patches,
-                 mid, max_r, elev, azim, title, out_path):
-    fig = plt.figure(figsize=(15, 9))
-    ax  = fig.add_subplot(111, projection="3d")
-
-    for idx in sorted(boxes):
+    for idx in sorted_idxs:
         b     = boxes[idx]
         color = colors[idx]
-        _draw_box(ax, b["min"], b["max"], color=color)
-        cx, cy, cz = b["centroid"]
-        ax.scatter(cx, cy, cz, color=color, s=40, zorder=5)
-        ax.text(cx, cy, cz, f"  {idx}", fontsize=8,
-                color=color, fontweight="bold")
+        h0, h1    = b["min"][h_axis], b["max"][h_axis]
+        v0, v1    = b["min"][v_axis], b["max"][v_axis]
+        depth_c   = b["centroid"][depth_axis]
 
-    _setup_axes(ax, boxes, mid, max_r)
+        rect = plt.Rectangle(
+            (h0, v0), h1 - h0, v1 - v0,
+            linewidth=1.5, edgecolor=color, facecolor=color, alpha=0.25,
+        )
+        ax.add_patch(rect)
+
+        ch, cv = (h0 + h1) / 2, (v0 + v1) / 2
+        ax.text(ch, cv, f"{idx}", ha="center", va="center",
+                fontsize=9, color=color, fontweight="bold")
+        ax.text(ch, v1, f" {depth_label}={depth_c:.2f}",
+                ha="center", va="bottom", fontsize=7, color=color, alpha=0.8)
+
+    # Ground line at Y = 0 when the vertical axis is Y
+    if v_axis == 1:
+        all_h = [b["min"][h_axis] for b in boxes.values()] + \
+                [b["max"][h_axis] for b in boxes.values()]
+        ax.axhline(0, color="green", linewidth=1, linestyle="--", alpha=0.6)
+        ax.text(min(all_h), 0, "  ground (Y=0)", color="green",
+                fontsize=8, va="bottom")
+
+    ax.autoscale()
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_xlabel(h_label, fontsize=11)
+    ax.set_ylabel(v_label, fontsize=11)
     ax.set_title(title, fontsize=13)
     ax.legend(handles=legend_patches, fontsize=7,
               bbox_to_anchor=(1.02, 1), loc="upper left", framealpha=0.8)
-    ax.view_init(elev=elev, azim=azim)
+    ax.grid(True, alpha=0.3)
+
+    if invert_h:
+        ax.invert_xaxis()
+    if invert_v:
+        ax.invert_yaxis()
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -362,27 +366,37 @@ def main():
         for idx in sorted(boxes)
     ]
 
-    all_pts = np.vstack([np.array([b["min"], b["max"]]) for b in boxes.values()])
-    mid     = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
-    max_r   = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2
+    # (mid/max_r not needed for 2D projections)
 
     # ── Outputs ───────────────────────────────────────────────────────────────
     if do_table:
         print_table(boxes, labels)
 
+    # h_axis, v_axis, h_label, v_label, depth_label, invert_h, invert_v
     view_configs = [
-        ("front", do_front,  5,  -90, "World-space object layout — front view  (X = left/right, Y = up/down)"),
-        ("side",  do_side,   5,    0, "World-space object layout — side view   (Y = up/down, Z = depth)"),
-        ("top",   do_top,   85,  -90, "World-space object layout — top view"),
+        ("front", do_front,
+         0, 1, "X  (left ↔ right)", "Y  (up ↓ down)", "Z",
+         False, False,
+         "Front elevation  —  looking along Z  (annotated: Z = depth)"),
+        ("side",  do_side,
+         2, 1, "Z  (depth →)", "Y  (up ↓ down)", "X",
+         False, False,
+         "Side elevation  —  looking along X  (annotated: X = left/right)"),
+        ("top",   do_top,
+         0, 2, "X  (left ↔ right)", "Z  (depth →)", "Y",
+         False, False,
+         "Top / plan view  —  looking down Y  (annotated: Y = height)"),
     ]
 
     rendered = 0
-    for name, enabled, elev, azim, title in view_configs:
+    for name, enabled, h_ax, v_ax, h_lbl, v_lbl, d_lbl, inv_h, inv_v, title \
+            in view_configs:
         if not enabled:
             continue
         out_path = os.path.join(out_dir, f"scene_layout_{name}.png")
-        _render_view(boxes, labels, colors, legend_patches,
-                     mid, max_r, elev, azim, title, out_path)
+        _render_2d_projection(boxes, labels, colors, legend_patches,
+                              h_ax, v_ax, h_lbl, v_lbl, d_lbl,
+                              title, out_path, inv_h, inv_v)
         rendered += 1
 
     # ── GIF composites ────────────────────────────────────────────────────────
