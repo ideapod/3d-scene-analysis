@@ -128,8 +128,8 @@ def _setup_axes(ax, boxes, mid, max_r):
     ax.set_ylabel("Y  (down ↕ up)",    labelpad=10)
     ax.set_zlabel("Z  (depth)",         labelpad=10)
 
-    # Ground plane — top of the highest object bottom
-    ground_y = max(b["min"][1] for b in boxes.values())
+    # Ground plane at Y = 0 (pipeline aligns every object's bottom to zero)
+    ground_y = 0.0
     x0, x1   = mid[0]-max_r, mid[0]+max_r
     z0, z1   = mid[2]-max_r, mid[2]+max_r
     xx, zz   = np.meshgrid([x0, x1], [z0, z1])
