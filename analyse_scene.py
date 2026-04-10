@@ -276,9 +276,9 @@ def main():
         print_table(boxes, labels)
 
     view_configs = [
-        ("front", do_front, 10,  -60, "World-space object layout — front view"),
-        ("side",  do_side,   5,    0, "World-space object layout — side view  (Y = up/down)"),
-        ("top",   do_top,   85,  -60, "World-space object layout — top view"),
+        ("front", do_front,  5,  -90, "World-space object layout — front view  (X = left/right, Y = up/down)"),
+        ("side",  do_side,   5,    0, "World-space object layout — side view   (Y = up/down, Z = depth)"),
+        ("top",   do_top,   85,  -90, "World-space object layout — top view"),
     ]
 
     rendered = 0
