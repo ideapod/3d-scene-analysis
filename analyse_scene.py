@@ -592,6 +592,16 @@ def main():
                         mid, max_r, elev, azim, title, out_path)
         rendered += 1
 
+    # ── Oblique projection ────────────────────────────────────────────────────
+    if do_oblique:
+        out_path = os.path.join(out_dir, "scene_layout_oblique.png")
+        _render_oblique_view(
+            boxes, labels, colors, legend_patches,
+            "Oblique (cabinet) projection  —  Z depth shown as diagonal offset",
+            out_path,
+        )
+        rendered += 1
+
     # ── GIF composites ────────────────────────────────────────────────────────
     if do_composite:
         if not gif_path or not os.path.exists(gif_path):
