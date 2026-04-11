@@ -184,6 +184,106 @@ def _color_palette(n):
     return {idx: cmap(i % 10) for i, idx in enumerate(sorted(range(n)))}
 
 
+# ── Oblique projection renderer ───────────────────────────────────────────────
+
+def _oblique(x, y, z, angle_deg=30, scale=0.35):
+    """Cabinet oblique: X→right, Y→up, Z→diagonal at angle_deg."""
+    import math
+    a = math.radians(angle_deg)
+    return x + z * scale * math.cos(a), y + z * scale * math.sin(a)
+
+
+def _render_oblique_view(boxes, labels, colors, legend_patches, title, out_path,
+                          angle_deg=30, depth_scale=0.35):
+    """
+    Oblique (cabinet) projection of all bounding boxes.
+      X  = left / right  (horizontal)
+      Y  = up / down     (vertical)
+      Z  = depth, shown as a diagonal offset at angle_deg
+
+    Objects further away (larger Z centroid) are shifted up-right, so gaps
+    between the front face of one object and the back face of another are
+    visible as real space — unlike the flat 2D projection which collapses Z.
+    """
+    from matplotlib.patches import Polygon as MplPolygon
+
+    def p(x, y, z):
+        return _oblique(x, y, z, angle_deg, depth_scale)
+
+    fig, ax = plt.subplots(figsize=(15, 9))
+
+    # Draw back-to-front so nearer objects paint over farther ones
+    sorted_idxs = sorted(boxes.keys(),
+                         key=lambda i: -boxes[i]["centroid"][2])
+
+    for idx in sorted_idxs:
+        b   = boxes[idx]
+        col = colors[idx]
+        x0, y0, z0 = b["min"]
+        x1, y1, z1 = b["max"]
+
+        # Three visible faces: front (z0), top (y1), right side (x1)
+        faces = [
+            # (corners,              face alpha)
+            ([p(x0,y0,z0), p(x1,y0,z0), p(x1,y1,z0), p(x0,y1,z0)], 0.30),  # front
+            ([p(x0,y1,z0), p(x1,y1,z0), p(x1,y1,z1), p(x0,y1,z1)], 0.18),  # top
+            ([p(x1,y0,z0), p(x1,y1,z0), p(x1,y1,z1), p(x1,y0,z1)], 0.22),  # right
+        ]
+        for corners, alpha in faces:
+            patch = MplPolygon(corners, closed=True,
+                               facecolor=col, edgecolor=col,
+                               alpha=alpha, linewidth=1.2)
+            ax.add_patch(patch)
+
+        # Draw back edges as thin dashed lines for context
+        back_edges = [
+            [p(x0,y0,z1), p(x1,y0,z1)],
+            [p(x0,y1,z1), p(x1,y1,z1)],
+            [p(x0,y0,z0), p(x0,y0,z1)],
+            [p(x0,y1,z0), p(x0,y1,z1)],
+            [p(x1,y0,z1), p(x1,y1,z1)],
+        ]
+        for e in back_edges:
+            ax.plot([e[0][0], e[1][0]], [e[0][1], e[1][1]],
+                    color=col, alpha=0.25, linewidth=0.7, linestyle="--")
+
+        # Label at projected centroid
+        cx, cy, cz = b["centroid"]
+        sx, sy = p(cx, cy, cz)
+        ax.text(sx, sy, f"{idx}", ha="center", va="center",
+                fontsize=9, color=col, fontweight="bold")
+
+    # Ground plane at Y = 0
+    all_x = [v for b in boxes.values() for v in [b["min"][0], b["max"][0]]]
+    all_z = [v for b in boxes.values() for v in [b["min"][2], b["max"][2]]]
+    gx0, gx1 = min(all_x), max(all_x)
+    gz0, gz1 = min(all_z), max(all_z)
+    ground_corners = [p(gx0, 0, gz0), p(gx1, 0, gz0),
+                      p(gx1, 0, gz1), p(gx0, 0, gz1)]
+    ground = MplPolygon(ground_corners, closed=True,
+                        facecolor="green", edgecolor="green",
+                        alpha=0.08, linewidth=1, linestyle="--")
+    ax.add_patch(ground)
+    ax.text(*p(gx0, 0, gz0), "  ground (Y=0)", color="green",
+            fontsize=8, va="top", alpha=0.8)
+
+    ax.autoscale()
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_xlabel(f"X  (left ↔ right)  +  Z×{depth_scale:.2f}·cos({angle_deg}°)",
+                  fontsize=10)
+    ax.set_ylabel(f"Y  (up/down)  +  Z×{depth_scale:.2f}·sin({angle_deg}°)",
+                  fontsize=10)
+    ax.set_title(title, fontsize=13)
+    ax.legend(handles=legend_patches, fontsize=7,
+              bbox_to_anchor=(1.02, 1), loc="upper left", framealpha=0.8)
+    ax.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
 def _render_2d_projection(boxes, labels, colors, legend_patches,
                            h_axis, v_axis,
                            h_label, v_label, depth_label,
@@ -361,6 +461,9 @@ def parse_args():
     views.add_argument("--front-3d",  action="store_true", help="3D front view (scene_layout_front_3d.png)")
     views.add_argument("--side-3d",   action="store_true", help="3D side view  (scene_layout_side_3d.png)")
     views.add_argument("--top-3d",    action="store_true", help="3D top view   (scene_layout_top_3d.png)")
+    views.add_argument("--oblique",   action="store_true",
+                       help="Oblique (cabinet) projection — shows X, Y and Z depth as diagonal offset "
+                            "(scene_layout_oblique.png)")
     views.add_argument("--composite", action="store_true",
                        help="Save layout+GIF composite images for front and side views")
     views.add_argument("--all",       action="store_true",
@@ -400,7 +503,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     explicit = [args.table, args.front, args.side, args.top,
-                args.front_3d, args.side_3d, args.top_3d, args.composite]
+                args.front_3d, args.side_3d, args.top_3d,
+                args.oblique, args.composite]
     do_all       = args.all or not any(explicit)
     do_table     = do_all or args.table
     do_front     = do_all or args.front
@@ -409,6 +513,7 @@ def main():
     do_front_3d  = do_all or args.front_3d
     do_side_3d   = do_all or args.side_3d
     do_top_3d    = do_all or args.top_3d
+    do_oblique   = do_all or args.oblique
     do_composite = do_all or args.composite
 
     # ── Load data ─────────────────────────────────────────────────────────────
