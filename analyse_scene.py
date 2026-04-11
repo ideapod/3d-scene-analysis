@@ -114,6 +114,31 @@ def load_scene_boxes(glb_path):
     return boxes
 
 
+# ── Pose plot helper ─────────────────────────────────────────────────────────
+
+def _run_pose_plot(results_dir: str, out_dir: str):
+    """
+    Call plot_poses.py (companion script) to generate pose_plot.png.
+    Runs in a subprocess so it doesn't pull heavy matplotlib state into
+    the analyse_scene process.
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), "plot_poses.py")
+    if not os.path.exists(script):
+        print("  WARNING: plot_poses.py not found — skipping pose plot.", file=sys.stderr)
+        return
+    # Determine where to write: use out_dir as the results_dir so PNG lands there
+    cmd = [sys.executable, script, results_dir]
+    if out_dir != results_dir:
+        # plot_poses always writes to <results_dir>/pose_plot.png; move it if needed
+        # For simplicity, just pass results_dir (it will find scene.glb there)
+        cmd = [sys.executable, script, results_dir]
+    print(f"  Generating pose vector plot …")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"  WARNING: plot_poses.py exited with code {result.returncode}", file=sys.stderr)
+
+
 # ── GLB rendering helpers ─────────────────────────────────────────────────────
 
 def render_glb_cardinal_frames(glb_path, out_dir, resolution=512):
@@ -603,9 +628,12 @@ def parse_args():
     views.add_argument("--glb-frames", action="store_true",
                        help="Render scene.glb from 0°, 90°, 180°, 270° using pyrender "
                             "(glb_frame_000deg.png … glb_frame_270deg.png)")
+    views.add_argument("--pose-plot", action="store_true",
+                       help="3D vector plot of per-object translation origins + orientation axes "
+                            "(pose_plot.png)")
     views.add_argument("--all",       action="store_true",
                        help="All outputs — 2D + 3D + table + composite + gif-frames + glb-frames "
-                            "(default if none specified)")
+                            "+ pose-plot (default if none specified)")
 
     gif_grp = p.add_argument_group("GIF frame selection")
     gif_grp.add_argument("--front-frame", type=int, default=_DEFAULT_FRONT_FRAME,
@@ -642,7 +670,8 @@ def main():
 
     explicit = [args.table, args.front, args.side, args.top,
                 args.front_3d, args.side_3d, args.top_3d,
-                args.oblique, args.composite, args.gif_frames, args.glb_frames]
+                args.oblique, args.composite, args.gif_frames, args.glb_frames,
+                args.pose_plot]
     do_all        = args.all or not any(explicit)
     do_table      = do_all or args.table
     do_front      = do_all or args.front
@@ -655,6 +684,7 @@ def main():
     do_composite  = do_all or args.composite
     do_gif_frames = do_all or args.gif_frames
     do_glb_frames = do_all or args.glb_frames
+    do_pose_plot  = do_all or args.pose_plot
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print(f"Loading {glb_path} …")
@@ -781,10 +811,14 @@ def main():
             print(f"  Extracting cardinal GIF frames from {gif_path} …")
             save_gif_cardinal_frames(gif_path, out_dir)
 
+    # ── Pose vector plot ─────────────────────────────────────────────────────
+    if do_pose_plot:
+        _run_pose_plot(args.results_dir or os.path.dirname(glb_path), out_dir)
+
     if rendered == 0 and not do_table and not do_composite and not do_gif_frames \
-            and not do_glb_frames:
+            and not do_glb_frames and not do_pose_plot:
         print("Nothing to output — use --front/--side/--top, --front-3d/--side-3d/--top-3d, "
-              "--table, --composite, --gif-frames, --glb-frames, or --all.")
+              "--table, --composite, --gif-frames, --glb-frames, --pose-plot, or --all.")
 
 
 if __name__ == "__main__":
