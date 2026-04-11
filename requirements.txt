@@ -3,3 +3,4 @@ trimesh
 matplotlib
 imageio
 Pillow
+pyrender
