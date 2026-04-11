@@ -137,6 +137,29 @@ def extract_gif_frame(gif_path, frame_idx):
     return Image.fromarray(np.array(frames[frame_idx]).astype(np.uint8))
 
 
+def save_gif_cardinal_frames(gif_path, out_dir):
+    """
+    Extract frames at 0°, 90°, 180°, 270° of the 360° orbit and save as PNGs.
+    Frame index = round(degrees / 360 * total_frames).
+    """
+    try:
+        import imageio
+        from PIL import Image
+    except ImportError:
+        print("  WARNING: imageio/Pillow not installed — skipping GIF frames.",
+              file=sys.stderr)
+        return
+
+    frames = imageio.mimread(gif_path)
+    n = len(frames)
+    for deg in [0, 90, 180, 270]:
+        idx = round(deg / 360 * n) % n
+        img = Image.fromarray(np.array(frames[idx]).astype(np.uint8))
+        out_path = os.path.join(out_dir, f"gif_frame_{deg:03d}deg.png")
+        img.save(out_path)
+        print(f"  Saved: {out_path}  (frame {idx}/{n})")
+
+
 def make_composite(layout_path, gif_frame, label, out_path):
     """
     Place the layout PNG and the GIF frame side by side and save.
@@ -466,8 +489,11 @@ def parse_args():
                             "(scene_layout_oblique.png)")
     views.add_argument("--composite", action="store_true",
                        help="Save layout+GIF composite images for front and side views")
+    views.add_argument("--gif-frames", action="store_true",
+                       help="Save individual frames at 0°, 90°, 180°, 270° of the GIF orbit "
+                            "(gif_frame_000deg.png … gif_frame_270deg.png)")
     views.add_argument("--all",       action="store_true",
-                       help="All outputs — 2D + 3D + table + composite (default if none specified)")
+                       help="All outputs — 2D + 3D + table + composite + gif-frames (default if none specified)")
 
     gif_grp = p.add_argument_group("GIF frame selection")
     gif_grp.add_argument("--front-frame", type=int, default=_DEFAULT_FRONT_FRAME,
@@ -504,17 +530,18 @@ def main():
 
     explicit = [args.table, args.front, args.side, args.top,
                 args.front_3d, args.side_3d, args.top_3d,
-                args.oblique, args.composite]
-    do_all       = args.all or not any(explicit)
-    do_table     = do_all or args.table
-    do_front     = do_all or args.front
-    do_side      = do_all or args.side
-    do_top       = do_all or args.top
-    do_front_3d  = do_all or args.front_3d
-    do_side_3d   = do_all or args.side_3d
-    do_top_3d    = do_all or args.top_3d
-    do_oblique   = do_all or args.oblique
-    do_composite = do_all or args.composite
+                args.oblique, args.composite, args.gif_frames]
+    do_all        = args.all or not any(explicit)
+    do_table      = do_all or args.table
+    do_front      = do_all or args.front
+    do_side       = do_all or args.side
+    do_top        = do_all or args.top
+    do_front_3d   = do_all or args.front_3d
+    do_side_3d    = do_all or args.side_3d
+    do_top_3d     = do_all or args.top_3d
+    do_oblique    = do_all or args.oblique
+    do_composite  = do_all or args.composite
+    do_gif_frames = do_all or args.gif_frames
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print(f"Loading {glb_path} …")
@@ -628,9 +655,17 @@ def main():
                 out_path = os.path.join(out_dir, f"scene_composite_{name}.png")
                 make_composite(layout_path, gif_frame, label, out_path)
 
-    if rendered == 0 and not do_table and not do_composite:
+    # ── GIF cardinal frames ───────────────────────────────────────────────────
+    if do_gif_frames:
+        if not gif_path or not os.path.exists(gif_path):
+            print("  WARNING: no GIF found — skipping cardinal frames.", file=sys.stderr)
+        else:
+            print(f"  Extracting cardinal GIF frames from {gif_path} …")
+            save_gif_cardinal_frames(gif_path, out_dir)
+
+    if rendered == 0 and not do_table and not do_composite and not do_gif_frames:
         print("Nothing to output — use --front/--side/--top, --front-3d/--side-3d/--top-3d, "
-              "--table, --composite, or --all.")
+              "--table, --composite, --gif-frames, or --all.")
 
 
 if __name__ == "__main__":
