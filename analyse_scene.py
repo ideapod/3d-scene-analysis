@@ -114,6 +114,112 @@ def load_scene_boxes(glb_path):
     return boxes
 
 
+# ── GLB rendering helpers ─────────────────────────────────────────────────────
+
+def render_glb_cardinal_frames(glb_path, out_dir, resolution=512):
+    """
+    Render scene.glb from 0°, 90°, 180°, 270° orbit positions using pyrender,
+    matching the camera convention used for the GIF (yaw_start=-90°, pitch=0,
+    fov=60°, Y-up, looks at scene centroid).
+
+    Requires pyrender.  On headless Linux (EC2) pyrender uses the EGL backend
+    automatically when PYOPENGL_PLATFORM=egl is set before import.
+
+    Outputs: glb_frame_000deg.png … glb_frame_270deg.png
+    """
+    # Must be set before pyrender is imported on headless systems
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
+    try:
+        import pyrender
+        from PIL import Image as PILImage
+    except ImportError:
+        print("  WARNING: pyrender / Pillow not installed — skipping GLB renders.",
+              file=sys.stderr)
+        return
+
+    # ── Load scene ────────────────────────────────────────────────────────────
+    try:
+        scene_tm = trimesh.load(glb_path, force="scene")
+    except Exception as exc:
+        print(f"  WARNING: could not load {glb_path}: {exc}", file=sys.stderr)
+        return
+
+    # ── Scene bounds → camera distance ────────────────────────────────────────
+    try:
+        bounds = scene_tm.bounds          # (2, 3)
+        center = bounds.mean(axis=0)
+        radius = float(np.linalg.norm(bounds[1] - bounds[0])) / 2
+    except Exception:
+        center = np.zeros(3)
+        radius = 1.0
+    cam_distance = max(radius * 2.5, 0.1)
+
+    # ── Build pyrender scene ──────────────────────────────────────────────────
+    try:
+        pr_scene = pyrender.Scene.from_trimesh_scene(
+            scene_tm, ambient_light=[0.3, 0.3, 0.3, 1.0]
+        )
+    except Exception as exc:
+        print(f"  WARNING: could not build pyrender scene: {exc}", file=sys.stderr)
+        return
+
+    camera = pyrender.PerspectiveCamera(yfov=np.radians(60), aspectRatio=1.0)
+    light  = pyrender.DirectionalLight(color=np.ones(3), intensity=4.0)
+
+    try:
+        renderer = pyrender.OffscreenRenderer(resolution, resolution)
+    except Exception as exc:
+        print(f"  WARNING: could not create offscreen renderer: {exc}", file=sys.stderr)
+        return
+
+    # ── Render each cardinal position ─────────────────────────────────────────
+    # GIF orbit: yaw_start = -90°, so the Nth 90° step lands at:
+    #   0°  → absolute yaw = -90° → camera at (-1,  0,  0)·r
+    #   90° → absolute yaw =   0° → camera at ( 0,  0,  1)·r
+    #  180° → absolute yaw =  90° → camera at ( 1,  0,  0)·r
+    #  270° → absolute yaw = 180° → camera at ( 0,  0, -1)·r
+    up_vec = np.array([0.0, 1.0, 0.0])
+
+    for orbit_deg in [0, 90, 180, 270]:
+        yaw = np.radians(orbit_deg - 90)          # absolute yaw (radians)
+        cam_pos = center + cam_distance * np.array([
+            np.sin(yaw), 0.0, np.cos(yaw)
+        ])
+
+        # Look-at → camera pose (OpenGL convention: camera looks along -Z)
+        fwd = center - cam_pos
+        fwd /= np.linalg.norm(fwd)
+        right = np.cross(fwd, up_vec)
+        if np.linalg.norm(right) < 1e-6:          # degenerate: camera on Y axis
+            right = np.array([1.0, 0.0, 0.0])
+        else:
+            right /= np.linalg.norm(right)
+        cam_up = np.cross(right, fwd)
+
+        cam_pose = np.eye(4)
+        cam_pose[:3, 0] = right
+        cam_pose[:3, 1] = cam_up
+        cam_pose[:3, 2] = -fwd          # -Z = forward in OpenGL/pyrender
+        cam_pose[:3, 3] = cam_pos
+
+        cam_node   = pr_scene.add(camera, pose=cam_pose)
+        light_node = pr_scene.add(light,  pose=cam_pose)
+
+        try:
+            color, _ = renderer.render(pr_scene)
+            out_path  = os.path.join(out_dir, f"glb_frame_{orbit_deg:03d}deg.png")
+            PILImage.fromarray(color).save(out_path)
+            print(f"  Saved: {out_path}  (yaw={np.degrees(yaw):.0f}°)")
+        except Exception as exc:
+            print(f"  WARNING: render failed at {orbit_deg}°: {exc}", file=sys.stderr)
+
+        pr_scene.remove_node(cam_node)
+        pr_scene.remove_node(light_node)
+
+    renderer.delete()
+
+
 # ── GIF helpers ───────────────────────────────────────────────────────────────
 
 def find_gif(results_dir):
@@ -492,8 +598,12 @@ def parse_args():
     views.add_argument("--gif-frames", action="store_true",
                        help="Save individual frames at 0°, 90°, 180°, 270° of the GIF orbit "
                             "(gif_frame_000deg.png … gif_frame_270deg.png)")
+    views.add_argument("--glb-frames", action="store_true",
+                       help="Render scene.glb from 0°, 90°, 180°, 270° using pyrender "
+                            "(glb_frame_000deg.png … glb_frame_270deg.png)")
     views.add_argument("--all",       action="store_true",
-                       help="All outputs — 2D + 3D + table + composite + gif-frames (default if none specified)")
+                       help="All outputs — 2D + 3D + table + composite + gif-frames + glb-frames "
+                            "(default if none specified)")
 
     gif_grp = p.add_argument_group("GIF frame selection")
     gif_grp.add_argument("--front-frame", type=int, default=_DEFAULT_FRONT_FRAME,
@@ -530,7 +640,7 @@ def main():
 
     explicit = [args.table, args.front, args.side, args.top,
                 args.front_3d, args.side_3d, args.top_3d,
-                args.oblique, args.composite, args.gif_frames]
+                args.oblique, args.composite, args.gif_frames, args.glb_frames]
     do_all        = args.all or not any(explicit)
     do_table      = do_all or args.table
     do_front      = do_all or args.front
@@ -542,6 +652,7 @@ def main():
     do_oblique    = do_all or args.oblique
     do_composite  = do_all or args.composite
     do_gif_frames = do_all or args.gif_frames
+    do_glb_frames = do_all or args.glb_frames
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print(f"Loading {glb_path} …")
@@ -655,6 +766,11 @@ def main():
                 out_path = os.path.join(out_dir, f"scene_composite_{name}.png")
                 make_composite(layout_path, gif_frame, label, out_path)
 
+    # ── GLB cardinal renders ──────────────────────────────────────────────────
+    if do_glb_frames:
+        print(f"  Rendering GLB cardinal frames from {glb_path} …")
+        render_glb_cardinal_frames(glb_path, out_dir)
+
     # ── GIF cardinal frames ───────────────────────────────────────────────────
     if do_gif_frames:
         if not gif_path or not os.path.exists(gif_path):
@@ -663,9 +779,10 @@ def main():
             print(f"  Extracting cardinal GIF frames from {gif_path} …")
             save_gif_cardinal_frames(gif_path, out_dir)
 
-    if rendered == 0 and not do_table and not do_composite and not do_gif_frames:
+    if rendered == 0 and not do_table and not do_composite and not do_gif_frames \
+            and not do_glb_frames:
         print("Nothing to output — use --front/--side/--top, --front-3d/--side-3d/--top-3d, "
-              "--table, --composite, --gif-frames, or --all.")
+              "--table, --composite, --gif-frames, --glb-frames, or --all.")
 
 
 if __name__ == "__main__":
