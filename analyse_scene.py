@@ -6,10 +6,12 @@ reconstructed by the SAM3D API.
 Usage:
     python analyse_scene.py <results_dir>              # all outputs
     python analyse_scene.py <results_dir> --table      # table only
-    python analyse_scene.py <results_dir> --front      # front view only
-    python analyse_scene.py <results_dir> --side       # side view only
-    python analyse_scene.py <results_dir> --top        # top view only
-    python analyse_scene.py <results_dir> --front --side --table
+    python analyse_scene.py <results_dir> --front      # 2D front elevation
+    python analyse_scene.py <results_dir> --front-3d   # 3D front view
+    python analyse_scene.py <results_dir> --side        # 2D side elevation
+    python analyse_scene.py <results_dir> --side-3d    # 3D side view
+    python analyse_scene.py <results_dir> --top         # 2D top/plan view
+    python analyse_scene.py <results_dir> --top-3d     # 3D top view
 
     # Custom paths:
     python analyse_scene.py --glb path/to/scene.glb --labels path/to/_labels.txt
@@ -20,6 +22,8 @@ Usage:
     python analyse_scene.py <results_dir> --composite --front-frame 40 --side-frame 120
 
 Outputs are saved to <results_dir>/ (or --out-dir if specified).
+  2D views  →  scene_layout_{front|side|top}.png
+  3D views  →  scene_layout_{front|side|top}_3d.png
 """
 
 import argparse
@@ -33,6 +37,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # Default GIF frame indices that align with front and side layout views.
 # The SAM3D render_video() spins 300 frames from yaw=-90° → +270°.
@@ -156,13 +161,9 @@ def make_composite(layout_path, gif_frame, label, out_path):
     bar_h  = 36
     canvas = Image.new("RGB", (lw + sw, lh + bar_h), (245, 245, 245))
 
-    # Layout plot (top-left, shifted down by bar)
     canvas.paste(layout, (0, bar_h))
-
-    # GIF frame (top-right, shifted down by bar)
     canvas.paste(gif_scaled.convert("RGB"), (lw, bar_h))
 
-    # Label bar
     draw = ImageDraw.Draw(canvas)
     draw.rectangle([lw, 0, lw + sw, bar_h], fill=(30, 30, 30))
     try:
@@ -170,15 +171,13 @@ def make_composite(layout_path, gif_frame, label, out_path):
     except Exception:
         font = ImageFont.load_default()
     draw.text((lw + 8, 8), label, fill=(220, 220, 220), font=font)
-
-    # Dividing line between layout and GIF
     draw.line([(lw, 0), (lw, lh + bar_h)], fill=(180, 180, 180), width=2)
 
     canvas.save(out_path)
     print(f"  Saved: {out_path}")
 
 
-# ── Rendering helpers ─────────────────────────────────────────────────────────
+# ── 2D projection renderer ────────────────────────────────────────────────────
 
 def _color_palette(n):
     cmap = plt.get_cmap("tab10")
@@ -207,9 +206,9 @@ def _render_2d_projection(boxes, labels, colors, legend_patches,
     for idx in sorted_idxs:
         b     = boxes[idx]
         color = colors[idx]
-        h0, h1    = b["min"][h_axis], b["max"][h_axis]
-        v0, v1    = b["min"][v_axis], b["max"][v_axis]
-        depth_c   = b["centroid"][depth_axis]
+        h0, h1  = b["min"][h_axis], b["max"][h_axis]
+        v0, v1  = b["min"][v_axis], b["max"][v_axis]
+        depth_c = b["centroid"][depth_axis]
 
         rect = plt.Rectangle(
             (h0, v0), h1 - h0, v1 - v0,
@@ -244,6 +243,66 @@ def _render_2d_projection(boxes, labels, colors, legend_patches,
         ax.invert_xaxis()
     if invert_v:
         ax.invert_yaxis()
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
+# ── 3D view renderer ──────────────────────────────────────────────────────────
+
+def _draw_box_3d(ax, min_pt, max_pt, color, alpha=0.18):
+    x0, y0, z0 = min_pt
+    x1, y1, z1 = max_pt
+    faces = [
+        [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]],
+        [[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],
+        [[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0]],
+        [[x1,y0,z0],[x1,y0,z1],[x1,y1,z1],[x1,y1,z0]],
+        [[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]],
+        [[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]],
+    ]
+    poly = Poly3DCollection(
+        faces, alpha=alpha, facecolor=color, edgecolor=color, linewidth=0.5
+    )
+    ax.add_collection3d(poly)
+
+
+def _render_3d_view(boxes, labels, colors, legend_patches,
+                    mid, max_r, elev, azim, title, out_path):
+    fig = plt.figure(figsize=(15, 9))
+    ax  = fig.add_subplot(111, projection="3d")
+
+    for idx in sorted(boxes):
+        b     = boxes[idx]
+        color = colors[idx]
+        _draw_box_3d(ax, b["min"], b["max"], color=color)
+        cx, cy, cz = b["centroid"]
+        ax.scatter(cx, cy, cz, color=color, s=40, zorder=5)
+        ax.text(cx, cy, cz, f"  {idx}", fontsize=8,
+                color=color, fontweight="bold")
+
+    ax.set_xlim(mid[0]-max_r, mid[0]+max_r)
+    ax.set_ylim(mid[1]-max_r, mid[1]+max_r)
+    ax.set_zlim(mid[2]-max_r, mid[2]+max_r)
+    ax.set_xlabel("X  (left ↔ right)", labelpad=10)
+    ax.set_ylabel("Y  (down ↕ up)",    labelpad=10)
+    ax.set_zlabel("Z  (depth)",         labelpad=10)
+
+    # Ground plane at Y = 0
+    x0, x1 = mid[0]-max_r, mid[0]+max_r
+    z0, z1 = mid[2]-max_r, mid[2]+max_r
+    xx, zz = np.meshgrid([x0, x1], [z0, z1])
+    yy     = np.zeros_like(xx)
+    ax.plot_surface(xx, yy, zz, alpha=0.07, color="green")
+    ax.text(x1, 0, z1, "  ground plane", fontsize=8,
+            color="green", style="italic")
+
+    ax.set_title(title, fontsize=13)
+    ax.legend(handles=legend_patches, fontsize=7,
+              bbox_to_anchor=(1.02, 1), loc="upper left", framealpha=0.8)
+    ax.view_init(elev=elev, azim=azim)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -296,12 +355,16 @@ def parse_args():
 
     views = p.add_argument_group("output selection (default: all)")
     views.add_argument("--table",     action="store_true", help="Print table to stdout")
-    views.add_argument("--front",     action="store_true", help="Render front view")
-    views.add_argument("--side",      action="store_true", help="Render side view")
-    views.add_argument("--top",       action="store_true", help="Render top/bird's-eye view")
+    views.add_argument("--front",     action="store_true", help="2D front elevation")
+    views.add_argument("--side",      action="store_true", help="2D side elevation")
+    views.add_argument("--top",       action="store_true", help="2D top / plan view")
+    views.add_argument("--front-3d",  action="store_true", help="3D front view (scene_layout_front_3d.png)")
+    views.add_argument("--side-3d",   action="store_true", help="3D side view  (scene_layout_side_3d.png)")
+    views.add_argument("--top-3d",    action="store_true", help="3D top view   (scene_layout_top_3d.png)")
     views.add_argument("--composite", action="store_true",
                        help="Save layout+GIF composite images for front and side views")
-    views.add_argument("--all",       action="store_true", help="All outputs (default if none specified)")
+    views.add_argument("--all",       action="store_true",
+                       help="All outputs — 2D + 3D + table + composite (default if none specified)")
 
     gif_grp = p.add_argument_group("GIF frame selection")
     gif_grp.add_argument("--front-frame", type=int, default=_DEFAULT_FRONT_FRAME,
@@ -336,13 +399,16 @@ def main():
 
     os.makedirs(out_dir, exist_ok=True)
 
-    # Default: all outputs if nothing specified
-    do_all       = args.all or not any([args.table, args.front, args.side,
-                                        args.top, args.composite])
+    explicit = [args.table, args.front, args.side, args.top,
+                args.front_3d, args.side_3d, args.top_3d, args.composite]
+    do_all       = args.all or not any(explicit)
     do_table     = do_all or args.table
     do_front     = do_all or args.front
     do_side      = do_all or args.side
     do_top       = do_all or args.top
+    do_front_3d  = do_all or args.front_3d
+    do_side_3d   = do_all or args.side_3d
+    do_top_3d    = do_all or args.top_3d
     do_composite = do_all or args.composite
 
     # ── Load data ─────────────────────────────────────────────────────────────
@@ -366,23 +432,26 @@ def main():
         for idx in sorted(boxes)
     ]
 
-    # (mid/max_r not needed for 2D projections)
+    # Bounding sphere centre/radius — used by 3D views
+    all_pts = np.vstack([np.array([b["min"], b["max"]]) for b in boxes.values()])
+    mid     = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
+    max_r   = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2
 
-    # ── Outputs ───────────────────────────────────────────────────────────────
+    # ── 2D projection outputs ─────────────────────────────────────────────────
     if do_table:
         print_table(boxes, labels)
 
-    # h_axis, v_axis, h_label, v_label, depth_label, invert_h, invert_v
-    view_configs = [
+    # (name, enabled, h_axis, v_axis, h_label, v_label, depth_label, inv_h, inv_v, title)
+    view_2d_configs = [
         ("front", do_front,
          0, 1, "X  (left ↔ right)", "Y  (up ↓ down)", "Z",
          False, False,
          "Front elevation  —  looking along Z  (annotated: Z = depth)"),
-        ("side",  do_side,
+        ("side", do_side,
          2, 1, "Z  (depth →)", "Y  (up ↓ down)", "X",
          False, False,
          "Side elevation  —  looking along X  (annotated: X = left/right)"),
-        ("top",   do_top,
+        ("top", do_top,
          0, 2, "X  (left ↔ right)", "Z  (depth →)", "Y",
          False, False,
          "Top / plan view  —  looking down Y  (annotated: Y = height)"),
@@ -390,13 +459,32 @@ def main():
 
     rendered = 0
     for name, enabled, h_ax, v_ax, h_lbl, v_lbl, d_lbl, inv_h, inv_v, title \
-            in view_configs:
+            in view_2d_configs:
         if not enabled:
             continue
         out_path = os.path.join(out_dir, f"scene_layout_{name}.png")
         _render_2d_projection(boxes, labels, colors, legend_patches,
                               h_ax, v_ax, h_lbl, v_lbl, d_lbl,
                               title, out_path, inv_h, inv_v)
+        rendered += 1
+
+    # ── 3D view outputs ───────────────────────────────────────────────────────
+    # (name, enabled, elev, azim, title)
+    view_3d_configs = [
+        ("front", do_front_3d,  5, -90,
+         "World-space layout — front 3D view  (X = left/right, Y = up/down)"),
+        ("side",  do_side_3d,   5,   0,
+         "World-space layout — side 3D view   (Y = up/down, Z = depth)"),
+        ("top",   do_top_3d,   85, -90,
+         "World-space layout — top 3D view"),
+    ]
+
+    for name, enabled, elev, azim, title in view_3d_configs:
+        if not enabled:
+            continue
+        out_path = os.path.join(out_dir, f"scene_layout_{name}_3d.png")
+        _render_3d_view(boxes, labels, colors, legend_patches,
+                        mid, max_r, elev, azim, title, out_path)
         rendered += 1
 
     # ── GIF composites ────────────────────────────────────────────────────────
@@ -406,19 +494,18 @@ def main():
         else:
             print(f"  GIF: {gif_path}")
             composite_configs = [
-                ("front", do_front, args.front_frame,
-                 f"GIF frame {args.front_frame}  (front view)"),
-                ("side",  do_side,  args.side_frame,
-                 f"GIF frame {args.side_frame}  (side view)"),
+                ("front", args.front_frame, f"GIF frame {args.front_frame}  (front view)"),
+                ("side",  args.side_frame,  f"GIF frame {args.side_frame}  (side view)"),
             ]
-            for name, layout_enabled, frame_idx, label in composite_configs:
+            for name, frame_idx, label in composite_configs:
                 layout_path = os.path.join(out_dir, f"scene_layout_{name}.png")
                 if not os.path.exists(layout_path):
-                    # Layout wasn't rendered yet — render it now
-                    cfg = {c[0]: c for c in view_configs}[name]
-                    _, _, elev, azim, title = cfg
-                    _render_view(boxes, labels, colors, legend_patches,
-                                 mid, max_r, elev, azim, title, layout_path)
+                    # 2D layout wasn't rendered yet — render it now
+                    cfg = {c[0]: c for c in view_2d_configs}[name]
+                    _, _, h_ax, v_ax, h_lbl, v_lbl, d_lbl, inv_h, inv_v, ttl = cfg
+                    _render_2d_projection(boxes, labels, colors, legend_patches,
+                                          h_ax, v_ax, h_lbl, v_lbl, d_lbl,
+                                          ttl, layout_path, inv_h, inv_v)
 
                 gif_frame = extract_gif_frame(gif_path, frame_idx)
                 if gif_frame is None:
@@ -427,7 +514,8 @@ def main():
                 make_composite(layout_path, gif_frame, label, out_path)
 
     if rendered == 0 and not do_table and not do_composite:
-        print("Nothing to output — use --table, --front, --side, --top, --composite, or --all.")
+        print("Nothing to output — use --front/--side/--top, --front-3d/--side-3d/--top-3d, "
+              "--table, --composite, or --all.")
 
 
 if __name__ == "__main__":
