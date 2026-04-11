@@ -127,8 +127,10 @@ def render_glb_cardinal_frames(glb_path, out_dir, resolution=512):
 
     Outputs: glb_frame_000deg.png … glb_frame_270deg.png
     """
-    # Must be set before pyrender is imported on headless systems
-    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    # On headless Linux (EC2) pyrender needs EGL; on Mac use the default context
+    import platform
+    if platform.system() == "Linux":
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
     try:
         import pyrender
