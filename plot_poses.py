@@ -134,6 +134,21 @@ _AXIS_COLORS = ["#ff3333", "#33cc33", "#3399ff"]   # local X, Y, Z
 _AXIS_LABELS = ["X", "Y", "Z"]
 
 
+def _p(t):
+    """
+    Map model coordinates → matplotlib 3D axes so the plot reads like a scene:
+      matplotlib X  ←  model X  (left/right in scene)
+      matplotlib Y  ←  model Z  (depth into scene)   [matplotlib Y = into page]
+      matplotlib Z  ←  model Y  (height)              [matplotlib Z = vertical]
+    """
+    return t[0], t[2], t[1]
+
+
+def _v(v):
+    """Same axis-swap for a direction vector."""
+    return v[0], v[2], v[1]
+
+
 def draw_poses(poses, out_path: str, axis_scale: float = 0.15, show: bool = False):
     if show:
         matplotlib.use("macosx" if sys.platform == "darwin" else "TkAgg")
@@ -143,13 +158,19 @@ def draw_poses(poses, out_path: str, axis_scale: float = 0.15, show: bool = Fals
     ax = fig.add_subplot(111, projection="3d")
 
     # ── World axes reference at origin ──
+    # Draw world X (red), Z/depth (blue), Y/height (green) as reference arrows.
+    # We use the same _p/_v mapping so they land on the right matplotlib axes.
     alen = axis_scale * 0.8
-    for i, (col, lbl) in enumerate(zip(_AXIS_COLORS, _AXIS_LABELS)):
-        d = np.zeros(3); d[i] = alen
-        ax.quiver(0, 0, 0, d[0], d[1], d[2],
+    world_axes = [
+        (np.array([alen, 0, 0]),  _AXIS_COLORS[0], "W-X"),   # model X → matplotlib X
+        (np.array([0, 0, alen]),  _AXIS_COLORS[1], "W-Y↑"),  # model Y (height) → matplotlib Z
+        (np.array([0, alen, 0]),  _AXIS_COLORS[2], "W-Z→"),  # model Z (depth) → matplotlib Y
+    ]
+    for d_model, col, lbl in world_axes:
+        px, py, pz = _v(d_model)
+        ax.quiver(0, 0, 0, px, py, pz,
                   color=col, linewidth=2, arrow_length_ratio=0.25, alpha=0.5)
-        ax.text(d[0]*1.2, d[1]*1.2, d[2]*1.2, f"W-{lbl}", color=col,
-                fontsize=7, alpha=0.6)
+        ax.text(px * 1.3, py * 1.3, pz * 1.3, lbl, color=col, fontsize=7, alpha=0.6)
 
     ax.scatter([0], [0], [0], color="black", s=40, zorder=5)
     ax.text(0, 0, 0, " origin", fontsize=7, color="black")
@@ -164,41 +185,47 @@ def draw_poses(poses, out_path: str, axis_scale: float = 0.15, show: bool = Fals
         sc  = pose["scale"]
         lbl = pose["label"]
 
+        px, py, pz = _p(t)
+
         # Scale arrow length by object scale, clamped to a readable range
         arrow_len = np.clip(sc * axis_scale, axis_scale * 0.4, axis_scale * 2.0)
 
-        # Local XYZ axes (columns of R)
+        # Local XYZ axes (columns of R) — apply same axis swap
         for j in range(3):
-            axis = R[:, j] * arrow_len
+            axis_model = R[:, j] * arrow_len
+            ax_x, ax_y, ax_z = _v(axis_model)
             ax.quiver(
-                t[0], t[1], t[2],
-                axis[0], axis[1], axis[2],
+                px, py, pz,
+                ax_x, ax_y, ax_z,
                 color=_AXIS_COLORS[j],
                 linewidth=1.5,
                 arrow_length_ratio=0.3,
             )
 
         # Origin sphere
-        ax.scatter([t[0]], [t[1]], [t[2]], color=col, s=80, zorder=6, depthshade=True)
+        ax.scatter([px], [py], [pz], color=col, s=80, zorder=6, depthshade=True)
 
-        # Label slightly offset
-        ax.text(t[0], t[1], t[2] + arrow_len * 0.3,
-                f" {lbl}\n  t=({t[0]:.2f},{t[1]:.2f},{t[2]:.2f})\n  s={sc:.3f}",
+        # Label — offset upward (matplotlib Z = model Y = height)
+        ax.text(px, py, pz + arrow_len * 0.3,
+                f" {lbl}\n  x={t[0]:.2f} y={t[1]:.2f} z={t[2]:.2f}\n  s={sc:.3f}",
                 fontsize=6.5, color=col, zorder=7)
 
     # ── Formatting ──────────────────────────────────────────────────────────
-    # Invert Z so scene reads intuitively (camera at front/bottom of Z range)
     if len(all_t):
         pad = axis_scale * 2
+        # matplotlib X = model X
         ax.set_xlim(all_t[:, 0].min() - pad, all_t[:, 0].max() + pad)
-        ax.set_ylim(all_t[:, 1].min() - pad, all_t[:, 1].max() + pad)
-        ax.set_zlim(0, all_t[:, 2].max() + pad)
+        # matplotlib Y = model Z (depth) — put near depth at front (smaller Y)
+        ax.set_ylim(all_t[:, 2].min() - pad, all_t[:, 2].max() + pad)
+        # matplotlib Z = model Y (height)
+        ax.set_zlim(0, all_t[:, 1].max() + pad)
 
-    ax.set_xlabel("X (right)")
-    ax.set_ylabel("Y (up)")
-    ax.set_zlabel("Z (depth)")
+    ax.set_xlabel("X  (left ← | → right)")
+    ax.set_ylabel("Z  (depth into scene →)")
+    ax.set_zlabel("Y  (height ↑)")
     ax.set_title("Object poses — translation origins + local XYZ axes\n"
-                 "Red=X  Green=Y  Blue=Z  (local)      Faded=world axes")
+                 "Red=local-X  Green=local-Y  Blue=local-Z      Faded=world axes\n"
+                 "Plot axes: horizontal=scene-X, into-page=depth(Z), vertical=height(Y)")
 
     # Small legend for axis colours
     import matplotlib.patches as mpatches
