@@ -80,7 +80,8 @@ def _poses_from_json(poses_path: str):
         trans = np.array(obj["translation"], dtype=float)
         scale = float(np.array(obj["scale"]).ravel()[0])
         R = Rotation.from_quat([quat[1], quat[2], quat[3], quat[0]]).as_matrix()
-        poses.append(dict(label=obj["label"], R=R, t=trans, scale=scale))
+        label = obj.get("label") or obj.get("slug") or f"object_{obj.get('index', '?')}"
+        poses.append(dict(label=label, R=R, t=trans, scale=scale))
     return poses
 
 
