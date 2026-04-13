@@ -527,35 +527,123 @@ def _draw_box_3d(ax, min_pt, max_pt, color, alpha=0.18):
 
 def _render_3d_view(boxes, labels, colors, legend_patches,
                     mid, max_r, elev, azim, title, out_path):
-    fig = plt.figure(figsize=(15, 9))
-    ax  = fig.add_subplot(111, projection="3d")
+    """
+    3D scene layout — dark theme, origin-centred axes.
 
+    GLTF world space:  X = right,  Y = up (height),  Z = depth (into scene).
+    Matplotlib 3D:     X = right,  Y = into page,     Z = up.
+
+    Remapping applied so the plot matches GLTF semantics:
+        mpl X  ←  gltf X   (left / right)
+        mpl Y  ←  gltf Z   (depth, into page)
+        mpl Z  ←  gltf Y   (height, up)
+
+    The view is always centred on (0,0,0) so both positive and negative
+    sides of every axis are visible, making the origin easy to locate.
+    """
+
+    # ── remap helper: gltf (x, y, z) → mpl (x, z, y) ─────────────────────────
+    def remap(pt):
+        x, y, z = pt
+        return np.array([x, z, y])   # mpl: x=gltf_x,  y=gltf_z,  z=gltf_y
+
+    # ── figure / axes ──────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(16, 10))
+    ax  = fig.add_subplot(111, projection="3d")
+    ax.grid(True, alpha=0.3)
+
+    # ── determine axis range centred on origin ─────────────────────────────────
+    # Collect per-axis extents in mpl space, always including 0.
+    all_mx = [remap(b["min"])[0] for b in boxes.values()] + \
+             [remap(b["max"])[0] for b in boxes.values()] + [0]
+    all_my = [remap(b["min"])[1] for b in boxes.values()] + \
+             [remap(b["max"])[1] for b in boxes.values()] + [0]
+    all_mz = [remap(b["min"])[2] for b in boxes.values()] + \
+             [remap(b["max"])[2] for b in boxes.values()] + [0]
+
+    # Half-range: largest absolute value across all three axes → cubic plot
+    half = max(
+        max(abs(v) for v in all_mx),
+        max(abs(v) for v in all_my),
+        max(abs(v) for v in all_mz),
+    ) * 1.15
+
+    # ── draw bounding boxes ────────────────────────────────────────────────────
     for idx in sorted(boxes):
         b     = boxes[idx]
         color = colors[idx]
-        _draw_box_3d(ax, b["min"], b["max"], color=color)
-        cx, cy, cz = b["centroid"]
-        ax.scatter(cx, cy, cz, color=color, s=40, zorder=5)
-        ax.text(cx, cy, cz, f"  {idx}", fontsize=8,
-                color=color, fontweight="bold")
+        mn = remap(b["min"])
+        mx = remap(b["max"])
+        _draw_box_3d(ax, mn, mx, color=color)
+        c = remap(b["centroid"])
+        ax.scatter(c[0], c[1], c[2], color=color, s=40, zorder=5)
+        ax.text(c[0], c[1], c[2], f"  {idx}",
+                fontsize=9, color=color, fontweight="bold")
 
-    ax.set_xlim(mid[0]-max_r, mid[0]+max_r)
-    ax.set_ylim(mid[1]-max_r, mid[1]+max_r)
-    ax.set_zlim(mid[2]-max_r, mid[2]+max_r)
-    ax.set_xlabel("X  (left ↔ right)", labelpad=10)
-    ax.set_ylabel("Y  (down ↕ up)",    labelpad=10)
-    ax.set_zlabel("Z  (depth)",         labelpad=10)
+    # ── world axes through origin ──────────────────────────────────────────────
+    # Drawn as coloured lines with an arrowhead-style annotation at the tip.
+    axis_len = half * 0.9
+    # X axis  → right  (red)
+    ax.plot([-axis_len, axis_len], [0, 0], [0, 0],
+            color='#e74c3c', linewidth=1.5, alpha=0.7)
+    ax.text(axis_len * 1.05, 0, 0, 'X+', color='#c0392b', fontsize=9, fontweight='bold')
+    ax.text(-axis_len * 1.05, 0, 0, 'X−', color='#c0392b', fontsize=9,
+            fontweight='bold', ha='right')
+    # Y axis  → into page / depth  (green)
+    ax.plot([0, 0], [-axis_len, axis_len], [0, 0],
+            color='#27ae60', linewidth=1.5, alpha=0.7)
+    ax.text(0, axis_len * 1.05, 0, 'Z+ depth', color='#27ae60', fontsize=9,
+            fontweight='bold', ha='center')
+    # Z axis  → up / height  (blue)
+    ax.plot([0, 0], [0, 0], [-axis_len, axis_len],
+            color='#2980b9', linewidth=1.5, alpha=0.7)
+    ax.text(0, 0, axis_len * 1.08, 'Y+ up', color='#2980b9', fontsize=9,
+            fontweight='bold', ha='center')
 
-    # Ground plane at Y = 0
-    x0, x1 = mid[0]-max_r, mid[0]+max_r
-    z0, z1 = mid[2]-max_r, mid[2]+max_r
-    xx, zz = np.meshgrid([x0, x1], [z0, z1])
-    yy     = np.zeros_like(xx)
-    ax.plot_surface(xx, yy, zz, alpha=0.07, color="green")
-    ax.text(x1, 0, z1, "  ground plane", fontsize=8,
-            color="green", style="italic")
+    # ── origin marker ──────────────────────────────────────────────────────────
+    ax.scatter([0], [0], [0], color='black', s=80, zorder=10)
+    ax.text(0, 0, -half * 0.06, ' (0,0,0)', color='#555555',
+            fontsize=8, ha='center')
 
-    ax.set_title(title, fontsize=13)
+    # ── ground plane  (gltf Y=0 → mpl Z=0) ───────────────────────────────────
+    gp = np.array([-half, half])
+    xx, yy = np.meshgrid(gp, gp)
+    zz = np.zeros_like(xx)
+    ax.plot_surface(xx, yy, zz, alpha=0.07, color='green')
+    ax.text(half * 0.9, half * 0.9, 0.05, 'ground  Y=0',
+            color='green', fontsize=8, style='italic', alpha=0.8)
+
+    # ── axis limits + nice round-number ticks ─────────────────────────────────
+    ax.set_xlim(-half, half)
+    ax.set_ylim(-half, half)
+    ax.set_zlim(-half, half)
+
+    # Choose a tick step that gives ~5-8 ticks across the range
+    raw_step = half / 4
+    magnitude = 10 ** np.floor(np.log10(max(raw_step, 0.01)))
+    for frac in [0.5, 1, 2, 5, 10]:
+        step = frac * magnitude
+        if half / step <= 6:
+            break
+    tick_vals = np.arange(
+        np.ceil(-half / step) * step,
+        np.floor(half / step) * step + step * 0.5,
+        step,
+    )
+    tick_vals  = np.round(tick_vals, 6)
+    tick_labels = [f"{v:.4g}" for v in tick_vals]
+
+    ax.set_xticks(tick_vals); ax.set_xticklabels(tick_labels, fontsize=7)
+    ax.set_yticks(tick_vals); ax.set_yticklabels(tick_labels, fontsize=7)
+    ax.set_zticks(tick_vals); ax.set_zticklabels(tick_labels, fontsize=7)
+
+    # ── axis labels ────────────────────────────────────────────────────────────
+    ax.set_xlabel("X  (left ↔ right)", labelpad=12, fontsize=10)
+    ax.set_ylabel("Z  (depth →)",      labelpad=12, fontsize=10)
+    ax.set_zlabel("Y  (↑ up)",         labelpad=12, fontsize=10)
+
+    # ── title + legend ─────────────────────────────────────────────────────────
+    ax.set_title(title, fontsize=12, pad=12)
     ax.legend(handles=legend_patches, fontsize=7,
               bbox_to_anchor=(1.02, 1), loc="upper left", framealpha=0.8)
     ax.view_init(elev=elev, azim=azim)
