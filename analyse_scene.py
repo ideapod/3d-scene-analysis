@@ -738,14 +738,23 @@ def main():
     # ── Resolve paths ─────────────────────────────────────────────────────────
     if args.results_dir:
         glb_path    = args.glb    or os.path.join(args.results_dir, "scene.glb")
-        labels_path = args.labels or os.path.join(args.results_dir, "_labels.txt")
+        _masks_labels = os.path.join(args.results_dir, "masks", "_labels.txt")
+        labels_path = args.labels or (
+            _masks_labels if os.path.exists(_masks_labels)
+            else os.path.join(args.results_dir, "_labels.txt")
+        )
         gif_path    = args.gif    or find_gif(args.results_dir)
         out_dir     = args.out_dir or args.results_dir
     elif args.glb:
         glb_path    = args.glb
-        labels_path = args.labels or os.path.join(os.path.dirname(args.glb), "_labels.txt")
+        _glb_dir    = os.path.dirname(args.glb)
+        _masks_labels = os.path.join(_glb_dir, "masks", "_labels.txt")
+        labels_path = args.labels or (
+            _masks_labels if os.path.exists(_masks_labels)
+            else os.path.join(_glb_dir, "_labels.txt")
+        )
         gif_path    = args.gif
-        out_dir     = args.out_dir or os.path.dirname(args.glb)
+        out_dir     = args.out_dir or _glb_dir
     else:
         print("ERROR: provide a results_dir or --glb path.", file=sys.stderr)
         sys.exit(1)
@@ -778,6 +787,15 @@ def main():
     print(f"Loading {glb_path} …")
     boxes  = load_scene_boxes(glb_path)
     labels = load_labels(labels_path)
+
+    # Fallback: derive labels from GLB geometry names when _labels.txt is absent.
+    # Geometry name format: "object_{idx}_{label_slug}" e.g. "object_13_man_man"
+    if not labels:
+        for idx, box in boxes.items():
+            name  = box.get("name", "")
+            parts = name.split("_", 2)   # ["object", "13", "man_man"]
+            if len(parts) == 3:
+                labels[idx] = parts[2].replace("_", " ")
 
     if not boxes:
         print("ERROR: no geometry found in scene.glb", file=sys.stderr)
